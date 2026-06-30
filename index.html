@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Tableau de bord — Demandes de congés</title>
+<link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@600;700&family=DM+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+:root{--g:#C9A84C;--dk:#1A1A1A;--md:#666;--lt:#F9F7F2;--bd:#E0DCD0;--green:#27AE60;--orange:#E67E22;--red:#C0392B;--blue:#2980B9}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'DM Sans',sans-serif;background:#F2EFE8;min-height:100vh;padding:20px 14px 50px;color:var(--dk)}
+.hdr{max-width:1100px;margin:0 auto 20px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px}
+.hdr h1{font-family:'Playfair Display',serif;font-size:22px;color:var(--dk)}
+.hdr .sub{font-size:12px;color:var(--md);margin-top:2px}
+.refresh{background:var(--dk);color:#fff;border:none;padding:9px 18px;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer}
+.refresh:hover{background:#333}
+.filters{max-width:1100px;margin:0 auto 16px;display:flex;gap:10px;flex-wrap:wrap}
+.filters select,.filters input{border:1.5px solid var(--bd);border-radius:6px;padding:7px 12px;font-size:12px;font-family:'DM Sans',sans-serif;background:#fff}
+.stats{max-width:1100px;margin:0 auto 18px;display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px}
+.stat{background:#fff;border-radius:8px;padding:12px 16px;border-left:4px solid var(--g)}
+.stat .n{font-family:'Playfair Display',serif;font-size:26px;font-weight:700}
+.stat .l{font-size:10.5px;color:var(--md);text-transform:uppercase;letter-spacing:.5px}
+table{max-width:1100px;margin:0 auto;width:100%;border-collapse:collapse;background:#fff;border-radius:10px;overflow:hidden;box-shadow:0 4px 18px rgba(0,0,0,.07)}
+th{background:var(--dk);color:#fff;font-size:10.5px;text-transform:uppercase;letter-spacing:.5px;padding:11px 12px;text-align:left}
+td{padding:11px 12px;font-size:12.5px;border-bottom:1px solid var(--bd)}
+tr:last-child td{border-bottom:none}
+tr:hover td{background:var(--lt)}
+.badge{display:inline-block;padding:3px 10px;border-radius:20px;font-size:10.5px;font-weight:700}
+.b-attente{background:#FFF3CD;color:#856404}
+.b-valide{background:#E8F4E8;color:var(--green)}
+.b-refuse{background:#FDEDEC;color:var(--red)}
+.retard{color:var(--red);font-weight:700}
+.empty{max-width:1100px;margin:40px auto;text-align:center;color:var(--md);font-size:13px}
+</style>
+</head>
+<body>
+
+<div class="hdr">
+  <div>
+    <h1>Suivi des demandes de congés</h1>
+    <div class="sub" id="lastUpdate">Chargement...</div>
+  </div>
+  <button class="refresh" onclick="load()">↻ Actualiser</button>
+</div>
+
+<div class="stats" id="stats"></div>
+
+<div class="filters">
+  <select id="fSoc" onchange="render()"><option value="">Toutes sociétés</option></select>
+  <select id="fStatut" onchange="render()">
+    <option value="">Tous statuts</option>
+    <option value="en_attente">En attente</option>
+    <option value="valide">Validé</option>
+    <option value="refuse">Refusé</option>
+  </select>
+  <input type="text" id="fSearch" placeholder="Rechercher un nom..." oninput="render()">
+</div>
+
+<table>
+  <thead>
+    <tr>
+      <th>Collaborateur</th><th>Société</th><th>Type</th><th>Dates</th>
+      <th>Étape</th><th>En attente de</th><th>Statut</th><th>Dernière action</th>
+    </tr>
+  </thead>
+  <tbody id="rows"></tbody>
+</table>
+<div class="empty" id="empty" style="display:none">Aucune demande trouvée.</div>
+
+<script>
+// ⚠️ Remplacer par l'URL de votre webhook n8n "get-demandes"
+var N8N_URL = 'https://edgard-opticiens.app.n8n.cloud/webhook/get-demandes';
+
+var DATA = [];
+
+function etapeLabel(e){
+  return {collab:'Collaborateur',responsable:'Responsable',direction:'Direction',rh:'RH',termine:'Terminé'}[e]||e;
+}
+function statutBadge(s){
+  if(s==='valide')return '<span class="badge b-valide">Validé</span>';
+  if(s==='refuse')return '<span class="badge b-refuse">Refusé</span>';
+  return '<span class="badge b-attente">En attente</span>';
+}
+function isLate(dateStr){
+  if(!dateStr)return false;
+  var diff=(Date.now()-new Date(dateStr).getTime())/3600000;
+  return diff>=48;
+}
+function fmtDate(d){
+  if(!d)return'-';
+  var dt=new Date(d);
+  if(isNaN(dt))return d;
+  return dt.toLocaleDateString('fr-FR')+' '+dt.toLocaleTimeString('fr-FR',{hour:'2-digit',minute:'2-digit'});
+}
+
+function render(){
+  var soc=document.getElementById('fSoc').value;
+  var statut=document.getElementById('fStatut').value;
+  var search=document.getElementById('fSearch').value.toLowerCase();
+
+  var filtered=DATA.filter(function(d){
+    if(soc&&d.societe!==soc)return false;
+    if(statut&&d.statut!==statut)return false;
+    if(search&&!((d.nom||'')+' '+(d.prenom||'')).toLowerCase().includes(search))return false;
+    return true;
+  });
+
+  // Stats
+  var nAttente=DATA.filter(function(d){return d.statut==='en_attente'}).length;
+  var nValide=DATA.filter(function(d){return d.statut==='valide'}).length;
+  var nRetard=DATA.filter(function(d){return d.statut==='en_attente'&&isLate(d.date_derniere_action)}).length;
+  document.getElementById('stats').innerHTML=
+    '<div class="stat" style="border-color:#E67E22"><div class="n">'+nAttente+'</div><div class="l">En attente</div></div>'+
+    '<div class="stat" style="border-color:#C0392B"><div class="n">'+nRetard+'</div><div class="l">En retard (+48h)</div></div>'+
+    '<div class="stat" style="border-color:#27AE60"><div class="n">'+nValide+'</div><div class="l">Validées</div></div>'+
+    '<div class="stat" style="border-color:#C9A84C"><div class="n">'+DATA.length+'</div><div class="l">Total demandes</div></div>';
+
+  var tbody=document.getElementById('rows');
+  if(!filtered.length){
+    tbody.innerHTML='';
+    document.getElementById('empty').style.display='block';
+    return;
+  }
+  document.getElementById('empty').style.display='none';
+
+  filtered.sort(function(a,b){return new Date(b.date_derniere_action)-new Date(a.date_derniere_action);});
+
+  tbody.innerHTML=filtered.map(function(d){
+    var late=d.statut==='en_attente'&&isLate(d.date_derniere_action);
+    return '<tr>'+
+      '<td><strong>'+(d.prenom||'')+' '+(d.nom||'')+'</strong></td>'+
+      '<td>'+(d.societe||'-')+'</td>'+
+      '<td>'+(d.type||'-')+'</td>'+
+      '<td>'+fmtDate(d.date_debut).split(' ')[0]+(d.date_fin&&d.date_fin!==d.date_debut?' → '+fmtDate(d.date_fin).split(' ')[0]:'')+'</td>'+
+      '<td>'+etapeLabel(d.etape)+'</td>'+
+      '<td>'+(d.en_attente_nom||'-')+'</td>'+
+      '<td>'+statutBadge(d.statut)+'</td>'+
+      '<td class="'+(late?'retard':'')+'">'+fmtDate(d.date_derniere_action)+(late?' ⚠️':'')+'</td>'+
+    '</tr>';
+  }).join('');
+}
+
+function dedupeLatest(arr){
+  var byId={};
+  arr.forEach(function(d){
+    var id=d.id;
+    if(!id)return;
+    if(!byId[id]||new Date(d.date_derniere_action)>new Date(byId[id].date_derniere_action)){
+      byId[id]=d;
+    }
+  });
+  return Object.values(byId);
+}
+
+function load(){
+  document.getElementById('lastUpdate').textContent='Chargement...';
+  fetch(N8N_URL)
+    .then(function(r){return r.json();})
+    .then(function(data){
+      var raw=Array.isArray(data)?data:(data.data||[]);
+      DATA=dedupeLatest(raw);
+      var socs=[...new Set(DATA.map(function(d){return d.societe;}).filter(Boolean))].sort();
+      var sel=document.getElementById('fSoc');
+      sel.innerHTML='<option value="">Toutes sociétés</option>'+socs.map(function(s){return '<option value="'+s+'">'+s+'</option>';}).join('');
+      document.getElementById('lastUpdate').textContent='Mis à jour le '+new Date().toLocaleString('fr-FR')+' ('+raw.length+' lignes, '+DATA.length+' demandes)';
+      render();
+    })
+    .catch(function(e){
+      document.getElementById('lastUpdate').textContent='Erreur de chargement — vérifiez l\'URL n8n';
+      console.error(e);
+    });
+}
+
+load();
+setInterval(load,60000); // auto-refresh toutes les 60s
+</script>
+</body>
+</html>
